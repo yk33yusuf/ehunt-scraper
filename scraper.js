@@ -23,133 +23,111 @@ export async function scrapeProduct(productId) {
     await page.check('#loginform-rememberme');
     
     console.log('✅ Form dolduruldu');
-
     await page.waitForTimeout(1000);
 
     // 3. Login butonuna tıkla
     await page.click('#loginBut');
     console.log('✅ Login butonuna tıklandı');
 
-    await page.waitForTimeout(4000); // Login için bekle
+    await page.waitForTimeout(5000); // Daha uzun bekle
 
-    // 4. URL kontrolü
-    if (page.url().includes('/user/login')) {
-      throw new Error('Login başarısız!');
+    // 4. Login sonrası URL ve sayfa içeriği
+    const loginResultUrl = page.url();
+    console.log('📍 Login sonrası URL:', loginResultUrl);
+    
+    const loginBodyText = await page.evaluate(() => document.body.innerText);
+    console.log('📝 Login sonrası body text (ilk 500 karakter):', loginBodyText.substring(0, 500));
+
+    if (loginResultUrl.includes('/user/login')) {
+      // Hata mesajı var mı?
+      const errorMsg = await page.evaluate(() => {
+        const errorEl = document.querySelector('.help-block-error');
+        return errorEl ? errorEl.innerText : null;
+      });
+      throw new Error(`Login başarısız! Hata: ${errorMsg || 'Bilinmeyen'}`);
     }
 
-    console.log('✅ Login başarılı! URL:', page.url());
+    console.log('✅ Login başarılı!');
 
     // 5. Ürün sayfasına git
     await page.goto(`https://ehunt.ai/product-detail/${productId}`, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
-    console.log('✅ Ürün sayfası yüklendi');
+    console.log('✅ Ürün sayfasına yönlendirme yapıldı');
 
-    // 6. "Price:" text'ini bekle (daha güvenilir)
-    try {
-      await page.waitForFunction(() => {
-        return document.body.innerText.includes('Price:');
-      }, { timeout: 15000 });
-      console.log('✅ Price bilgisi yüklendi');
-    } catch {
-      console.log('⚠️ Price bilgisi bulunamadı, devam ediyorum...');
-    }
+    // Çok uzun bekle (JavaScript için)
+    await page.waitForTimeout(8000);
 
-    // Ekstra bekleme (JavaScript render için)
-    await page.waitForTimeout(5000);
+    // 6. Sayfa durumu
+    const productUrl = page.url();
+    console.log('📍 Ürün sayfası URL:', productUrl);
 
-    // 7. Verileri çek (daha esnek selector'lar)
+    // Body text'i al
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    console.log('📝 Ürün sayfası body text (ilk 1000 karakter):', bodyText.substring(0, 1000));
+
+    // HTML'in bir kısmını al
+    const htmlSnippet = await page.evaluate(() => {
+      const body = document.body.innerHTML;
+      return body.substring(0, 2000);
+    });
+    console.log('📄 HTML snippet:', htmlSnippet);
+
+    // "Upgrade" mesajı var mı kontrol et
+    const hasUpgradeMessage = bodyText.includes('Upgrade') || bodyText.includes('upgrade');
+    const hasPriceText = bodyText.includes('Price:');
+    
+    console.log('🔍 Sayfa analizi:', {
+      hasUpgradeMessage,
+      hasPriceText,
+      bodyLength: bodyText.length
+    });
+
+    // 7. Verileri çek
     const data = await page.evaluate(() => {
-      // data-v attribute'u ile div bul
-      const priceDiv = document.querySelector('[data-v-0dd74c48][class*="listingDetailPrice"]');
+      // Tüm div'leri kontrol et
+      const allDivs = document.querySelectorAll('div[data-v-0dd74c48]');
+      console.log('Toplam data-v div sayısı:', allDivs.length);
+
+      // Price bilgisi içeren herhangi bir element
+      const priceElements = Array.from(document.querySelectorAll('*'))
+        .filter(el => el.innerText && el.innerText.includes('Price:'));
       
+      console.log('Price içeren element sayısı:', priceElements.length);
+
       let currentPrice = null;
       let originalPrice = null;
-      let discount = null;
-      let sales = null;
-      let favorites = null;
-      let reviews = null;
-      let stocks = null;
       
-      if (priceDiv) {
-        // Tüm span'ları tara
-        const spans = priceDiv.querySelectorAll('span');
+      // Eğer Price: bulunduysa, yanındaki span'ları al
+      if (priceElements.length > 0) {
+        const priceParent = priceElements[0].parentElement;
+        const spans = priceParent?.querySelectorAll('span') || [];
         
         for (let span of spans) {
           const text = span.innerText.trim();
           const style = span.getAttribute('style') || '';
           
-          // Büyük font = current price
-          if (style.includes('font-size: 34px') || style.includes('font-size:34px')) {
-            currentPrice = text.replace(/\s+/g, ' ').trim();
-          }
-          // Line-through = original price
-          else if (style.includes('line-through')) {
-            originalPrice = text.trim();
-          }
-          // "off" içeren = discount
-          else if (text.includes('off')) {
-            discount = text.trim();
-          }
-          // Stats içeren span
-          else if (text.includes('Sales') || text.includes('Favorites')) {
-            const salesMatch = text.match(/(\d+)\s*Sales/);
-            const favoritesMatch = text.match(/(\d+)\s*Favorites/);
-            const reviewsMatch = text.match(/(\d+)\s*Reviews/);
-            const stocksMatch = text.match(/([\d,]+)\s*Stocks/);
-            
-            if (salesMatch) sales = parseInt(salesMatch[1]);
-            if (favoritesMatch) favorites = parseInt(favoritesMatch[1]);
-            if (reviewsMatch) reviews = parseInt(reviewsMatch[1]);
-            if (stocksMatch) stocks = parseInt(stocksMatch[1].replace(/,/g, ''));
+          if (style.includes('font-size: 34px')) {
+            currentPrice = text;
+          } else if (style.includes('line-through')) {
+            originalPrice = text;
           }
         }
       }
-
-      // Tags - data-v attribute ile bul
-      const tagsDiv = document.querySelector('[data-v-0dd74c48][class*="listingDetailTags"]');
-      const tags = [];
-      
-      if (tagsDiv) {
-        const tagDivs = tagsDiv.querySelectorAll('[class*="listingDetailTagsDiv"] div[style*="cursor"]');
-        for (let tag of tagDivs) {
-          const text = tag.innerText.trim();
-          if (text.length > 0) {
-            tags.push(text);
-          }
-        }
-      }
-
-      // Title
-      const title = document.querySelector('h1')?.innerText || 
-                    document.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
-                    document.title;
-
-      // Debug info
-      const debugInfo = {
-        hasPriceDiv: !!priceDiv,
-        hasTagsDiv: !!tagsDiv,
-        bodyTextIncludes: {
-          price: document.body.innerText.includes('Price:'),
-          tags: document.body.innerText.includes('Tags')
-        }
-      };
 
       return {
         productId: window.location.pathname.split('/').pop(),
-        title: title,
+        title: document.title,
         currentPrice: currentPrice,
         originalPrice: originalPrice,
-        discount: discount,
-        sales: sales,
-        favorites: favorites,
-        reviews: reviews,
-        stocks: stocks,
-        tags: tags,
         url: window.location.href,
         scrapedAt: new Date().toISOString(),
-        debug: debugInfo
+        debug: {
+          totalDataVDivs: allDivs.length,
+          priceElementsFound: priceElements.length,
+          bodyTextLength: document.body.innerText.length
+        }
       };
     });
 
@@ -157,25 +135,13 @@ export async function scrapeProduct(productId) {
     return data;
 
   } catch (error) {
-    console.error('❌ Hata:', error.message);
-    console.error('Mevcut URL:', page.url());
+    console.error('❌ HATA:', error.message);
+    console.error('Stack:', error.stack);
     
     try {
-      // Screenshot
       await page.screenshot({ path: '/tmp/error-screenshot.png', fullPage: true });
-      console.log('📸 Screenshot kaydedildi');
-      
-      // HTML içeriğini logla (ilk 5000 karakter)
-      const html = await page.content();
-      console.log('📄 HTML (ilk 5000 karakter):', html.substring(0, 5000));
-      
-      // Body text
-      const bodyText = await page.evaluate(() => document.body.innerText);
-      console.log('📝 Body text (ilk 2000 karakter):', bodyText.substring(0, 2000));
-      
-    } catch (debugError) {
-      console.error('Debug bilgisi alınamadı:', debugError.message);
-    }
+      console.log('📸 Screenshot: /tmp/error-screenshot.png');
+    } catch {}
 
     throw new Error(`Scraping failed: ${error.message}`);
     
