@@ -24,8 +24,8 @@ export async function scrapeProduct(productId) {
     await page.fill('input[name="LoginForm[password]"]', process.env.EHUNT_PASSWORD);
     console.log('Password girildi');
 
-    // 3. Remember Me checkbox'ını işaretle (güvenlik için)
-    await page.check('input[name="LoginForm[rememberMe]"]');
+    // 3. Remember Me checkbox'ını işaretle (ID ile)
+    await page.check('#loginform-rememberme');
     console.log('Remember Me işaretlendi');
 
     // 4. Kısa bir bekleme (form validation için)
@@ -36,14 +36,14 @@ export async function scrapeProduct(productId) {
     console.log('Login butonuna tıklandı');
 
     // 6. Login sonrası bekle
-    await page.waitForTimeout(3000); // 3 saniye bekle
+    await page.waitForTimeout(3000);
 
     // URL kontrolü
     const currentUrl = page.url();
     console.log('Mevcut URL:', currentUrl);
 
     if (currentUrl.includes('/user/login')) {
-      // Hala login sayfasındayız, hata var mı kontrol et
+      // Hata mesajı var mı kontrol et
       const errorMessage = await page.$eval('.help-block-error', el => el.innerText).catch(() => null);
       if (errorMessage) {
         throw new Error(`Login hatası: ${errorMessage}`);
@@ -86,7 +86,7 @@ export async function scrapeProduct(productId) {
     console.error('❌ Hata:', error.message);
     console.error('Mevcut URL:', page.url());
     
-    // Hata durumunda screenshot ve HTML al
+    // Screenshot ve HTML
     try {
       await page.screenshot({ path: '/tmp/error-screenshot.png', fullPage: true });
       console.log('📸 Screenshot: /tmp/error-screenshot.png');
