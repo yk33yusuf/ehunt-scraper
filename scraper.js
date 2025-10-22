@@ -1,4 +1,7 @@
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-extra';
+import stealth from 'puppeteer-extra-plugin-stealth';
+
+chromium.use(stealth());
 
 export async function scrapeProduct(productId) {
   const browser = await chromium.launch({
@@ -7,7 +10,9 @@ export async function scrapeProduct(productId) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-blink-features=AutomationControlled',
-      '--disable-dev-shm-usage'
+      '--disable-dev-shm-usage',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process'
     ]
   });
 
