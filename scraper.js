@@ -19,63 +19,81 @@ export async function scrapeProduct(productId) {
 
     // 2. Login form'u doldur
     await page.fill('input[name="LoginForm[username]"]', process.env.EHUNT_EMAIL);
-    console.log('Email girildi:', process.env.EHUNT_EMAIL);
+    console.log('Email girildi');
 
     await page.fill('input[name="LoginForm[password]"]', process.env.EHUNT_PASSWORD);
     console.log('Password girildi');
 
-    // 3. Remember Me checkbox'ını işaretle (ID ile)
+    // 3. Remember Me checkbox
     await page.check('#loginform-rememberme');
     console.log('Remember Me işaretlendi');
 
-    // 4. Kısa bir bekleme (form validation için)
     await page.waitForTimeout(1000);
 
-    // 5. Login butonuna tıkla
+    // 4. Login butonuna tıkla
     await page.click('#loginBut');
     console.log('Login butonuna tıklandı');
 
-    // 6. Login sonrası bekle
     await page.waitForTimeout(3000);
 
-    // URL kontrolü
+    // 5. URL kontrolü
     const currentUrl = page.url();
     console.log('Mevcut URL:', currentUrl);
 
     if (currentUrl.includes('/user/login')) {
-      // Hata mesajı var mı kontrol et
-      const errorMessage = await page.$eval('.help-block-error', el => el.innerText).catch(() => null);
-      if (errorMessage) {
-        throw new Error(`Login hatası: ${errorMessage}`);
-      }
-      throw new Error('Login başarısız! Hala login sayfasındayız.');
+      throw new Error('Login başarısız!');
     }
 
     console.log('✅ Login başarılı!');
 
-    // 7. Ürün sayfasına git
+    // 6. Ürün sayfasına git
     await page.goto(`https://ehunt.ai/product-detail/${productId}`, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
     console.log('Ürün sayfası yüklendi');
 
-    // 8. Verileri çek
+    // Sayfa tam yüklenene kadar bekle
+    await page.waitForTimeout(3000);
+
+    // 7. Verileri çek
     const data = await page.evaluate(() => {
+      // Price
+      const priceDiv = document.querySelector('.src-css-product-listingDetailPrice-2yMy');
+      const currentPrice = priceDiv?.querySelector('span[style*="font-size: 34px"]')?.innerText.trim() || null;
+      const originalPrice = priceDiv?.querySelector('span[style*="line-through"]')?.innerText.trim() || null;
+      const discount = priceDiv?.querySelector('span:nth-child(3)')?.innerText.trim() || null;
+      
+      // Stats (Sales, Favorites, Reviews, Stocks)
+      const statsText = priceDiv?.querySelector('span[style*="position: absolute"]')?.innerText.trim() || '';
+      const salesMatch = statsText.match(/(\d+)\s*Sales/);
+      const favoritesMatch = statsText.match(/(\d+)\s*Favorites/);
+      const reviewsMatch = statsText.match(/(\d+)\s*Reviews/);
+      const stocksMatch = statsText.match(/([\d,]+)\s*Stocks/);
+
+      // Tags
+      const tagsDiv = document.querySelector('.src-css-product-listingDetailTags-1CRx');
+      const tags = Array.from(tagsDiv?.querySelectorAll('.src-css-product-listingDetailTagsDiv-bnGT div') || [])
+        .map(tag => tag.innerText.trim());
+
+      // Title (h1 veya meta tag'den al)
+      const title = document.querySelector('h1')?.innerText || 
+                    document.querySelector('meta[property="og:title"]')?.content ||
+                    document.title;
+
       return {
-        title: document.querySelector('.product-title')?.innerText || 
-               document.querySelector('h1')?.innerText || 
-               document.querySelector('[class*="title"]')?.innerText ||
-               null,
-        price: document.querySelector('.price')?.innerText || 
-               document.querySelector('[class*="price"]')?.innerText || 
-               null,
-        description: document.querySelector('.description')?.innerText || 
-                    document.querySelector('[class*="description"]')?.innerText || 
-                    null,
-        pageTitle: document.title,
-        currentUrl: window.location.href,
-        bodyPreview: document.body.innerText.substring(0, 500)
+        productId: window.location.pathname.split('/').pop(),
+        title: title,
+        currentPrice: currentPrice,
+        originalPrice: originalPrice,
+        discount: discount,
+        sales: salesMatch ? parseInt(salesMatch[1]) : null,
+        favorites: favoritesMatch ? parseInt(favoritesMatch[1]) : null,
+        reviews: reviewsMatch ? parseInt(reviewsMatch[1]) : null,
+        stocks: stocksMatch ? parseInt(stocksMatch[1].replace(/,/g, '')) : null,
+        tags: tags,
+        url: window.location.href,
+        scrapedAt: new Date().toISOString()
       };
     });
 
@@ -84,15 +102,10 @@ export async function scrapeProduct(productId) {
 
   } catch (error) {
     console.error('❌ Hata:', error.message);
-    console.error('Mevcut URL:', page.url());
     
-    // Screenshot ve HTML
     try {
       await page.screenshot({ path: '/tmp/error-screenshot.png', fullPage: true });
       console.log('📸 Screenshot: /tmp/error-screenshot.png');
-      
-      const htmlContent = await page.content();
-      console.log('📄 Sayfa HTML (ilk 2000 karakter):', htmlContent.substring(0, 2000));
     } catch {}
 
     throw new Error(`Scraping failed: ${error.message}`);
