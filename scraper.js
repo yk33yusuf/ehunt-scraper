@@ -3,10 +3,66 @@ import { chromium } from 'playwright';
 export async function scrapeProduct(productId) {
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-blink-features=AutomationControlled', // Bot detection bypass
+      '--disable-dev-shm-usage'
+    ]
   });
 
-  const page = await browser.newPage();
+  const context = await browser.newContext({
+    // Gerçek browser gibi görün
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    viewport: { width: 1920, height: 1080 },
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+    // Extra headers
+    extraHTTPHeaders: {
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
+  });
+
+  // Navigator properties üzerine yaz (bot detection bypass)
+  await context.addInitScript(() => {
+    // Webdriver özelliğini gizle
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined
+    });
+
+    // Chrome özelliklerini ekle
+    window.chrome = {
+      runtime: {}
+    };
+
+    // Permissions API
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+
+    // Plugin array
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5]
+    });
+
+    // Language
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en']
+    });
+  });
+
+  const page = await context.newPage();
+
+  // Console ve network error'ları yakala
+  page.on('console', msg => {
+    if (msg.type() === 'error') {
+      console.log('❌ Console error:', msg.text());
+    }
+  });
 
   try {
     // 1. Login sayfasına git
@@ -15,135 +71,80 @@ export async function scrapeProduct(productId) {
       timeout: 30000 
     });
 
-    console.log('✅ Login sayfası yüklendi');
+    console.log('✅ Login sayfası');
 
-    // 2. Login form'u doldur
+    // 2. Login form
     await page.fill('input[name="LoginForm[username]"]', process.env.EHUNT_EMAIL);
     await page.fill('input[name="LoginForm[password]"]', process.env.EHUNT_PASSWORD);
     await page.check('#loginform-rememberme');
     
-    console.log('✅ Form dolduruldu');
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(2000);
 
-    // 3. Login butonuna tıkla
+    // 3. Login
     await page.click('#loginBut');
-    console.log('✅ Login butonuna tıklandı');
+    console.log('✅ Login clicked');
 
-    await page.waitForTimeout(5000); // Daha uzun bekle
+    await page.waitForTimeout(6000);
 
-    // 4. Login sonrası URL ve sayfa içeriği
-    const loginResultUrl = page.url();
-    console.log('📍 Login sonrası URL:', loginResultUrl);
-    
-    const loginBodyText = await page.evaluate(() => document.body.innerText);
-    console.log('📝 Login sonrası body text (ilk 500 karakter):', loginBodyText.substring(0, 500));
-
-    if (loginResultUrl.includes('/user/login')) {
-      // Hata mesajı var mı?
-      const errorMsg = await page.evaluate(() => {
-        const errorEl = document.querySelector('.help-block-error');
-        return errorEl ? errorEl.innerText : null;
-      });
-      throw new Error(`Login başarısız! Hata: ${errorMsg || 'Bilinmeyen'}`);
+    if (page.url().includes('/user/login')) {
+      throw new Error('Login failed');
     }
 
-    console.log('✅ Login başarılı!');
+    console.log('✅ Login success');
 
-    // 5. Ürün sayfasına git
+    // 4. Ürün sayfası
     await page.goto(`https://ehunt.ai/product-detail/${productId}`, {
       waitUntil: 'networkidle',
       timeout: 30000
     });
-    console.log('✅ Ürün sayfasına yönlendirme yapıldı');
-
-    // Çok uzun bekle (JavaScript için)
-    await page.waitForTimeout(8000);
-
-    // 6. Sayfa durumu
-    const productUrl = page.url();
-    console.log('📍 Ürün sayfası URL:', productUrl);
-
-    // Body text'i al
-    const bodyText = await page.evaluate(() => document.body.innerText);
-    console.log('📝 Ürün sayfası body text (ilk 1000 karakter):', bodyText.substring(0, 1000));
-
-    // HTML'in bir kısmını al
-    const htmlSnippet = await page.evaluate(() => {
-      const body = document.body.innerHTML;
-      return body.substring(0, 2000);
-    });
-    console.log('📄 HTML snippet:', htmlSnippet);
-
-    // "Upgrade" mesajı var mı kontrol et
-    const hasUpgradeMessage = bodyText.includes('Upgrade') || bodyText.includes('upgrade');
-    const hasPriceText = bodyText.includes('Price:');
     
-    console.log('🔍 Sayfa analizi:', {
-      hasUpgradeMessage,
-      hasPriceText,
-      bodyLength: bodyText.length
-    });
+    console.log('✅ Product page loaded');
 
-    // 7. Verileri çek
+    // Uzun bekleme (render için)
+    await page.waitForTimeout(12000);
+
+    // 5. Sayfa analizi
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    console.log('📝 Body length:', bodyText.length);
+    console.log('📝 First 1000 chars:', bodyText.substring(0, 1000));
+
+    // 6. Veri çek
     const data = await page.evaluate(() => {
-      // Tüm div'leri kontrol et
-      const allDivs = document.querySelectorAll('div[data-v-0dd74c48]');
-      console.log('Toplam data-v div sayısı:', allDivs.length);
-
-      // Price bilgisi içeren herhangi bir element
-      const priceElements = Array.from(document.querySelectorAll('*'))
-        .filter(el => el.innerText && el.innerText.includes('Price:'));
+      // Price div'i bul
+      const allText = document.body.innerText;
       
-      console.log('Price içeren element sayısı:', priceElements.length);
-
-      let currentPrice = null;
-      let originalPrice = null;
-      
-      // Eğer Price: bulunduysa, yanındaki span'ları al
-      if (priceElements.length > 0) {
-        const priceParent = priceElements[0].parentElement;
-        const spans = priceParent?.querySelectorAll('span') || [];
-        
-        for (let span of spans) {
-          const text = span.innerText.trim();
-          const style = span.getAttribute('style') || '';
-          
-          if (style.includes('font-size: 34px')) {
-            currentPrice = text;
-          } else if (style.includes('line-through')) {
-            originalPrice = text;
-          }
-        }
-      }
+      // Manuel regex parsing
+      const priceMatch = allText.match(/Price:\s*\$\s*([\d.]+)/i);
+      const salesMatch = allText.match(/(\d+)\s*Sales/i);
+      const favoritesMatch = allText.match(/(\d+)\s*Favorites/i);
+      const reviewsMatch = allText.match(/(\d+)\s*Reviews/i);
+      const stocksMatch = allText.match(/([\d,]+)\s*Stocks/i);
 
       return {
         productId: window.location.pathname.split('/').pop(),
         title: document.title,
-        currentPrice: currentPrice,
-        originalPrice: originalPrice,
+        currentPrice: priceMatch ? `$${priceMatch[1]}` : null,
+        sales: salesMatch ? parseInt(salesMatch[1]) : null,
+        favorites: favoritesMatch ? parseInt(favoritesMatch[1]) : null,
+        reviews: reviewsMatch ? parseInt(reviewsMatch[1]) : null,
+        stocks: stocksMatch ? parseInt(stocksMatch[1].replace(/,/g, '')) : null,
         url: window.location.href,
         scrapedAt: new Date().toISOString(),
-        debug: {
-          totalDataVDivs: allDivs.length,
-          priceElementsFound: priceElements.length,
-          bodyTextLength: document.body.innerText.length
-        }
+        bodyLength: allText.length
       };
     });
 
-    console.log('✅ Veri çekildi:', JSON.stringify(data, null, 2));
+    console.log('✅ Data:', JSON.stringify(data, null, 2));
     return data;
 
   } catch (error) {
-    console.error('❌ HATA:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('❌ Error:', error.message);
     
     try {
-      await page.screenshot({ path: '/tmp/error-screenshot.png', fullPage: true });
-      console.log('📸 Screenshot: /tmp/error-screenshot.png');
+      await page.screenshot({ path: '/tmp/error.png', fullPage: true });
     } catch {}
 
-    throw new Error(`Scraping failed: ${error.message}`);
+    throw error;
     
   } finally {
     await browser.close();
