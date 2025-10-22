@@ -37,7 +37,7 @@ export async function scrapeProduct(productId) {
       throw new Error('Login başarısız!');
     }
 
-    console.log('✅ Login başarılı!');
+    console.log('✅ Login başarılı! URL:', page.url());
 
     // 5. Ürün sayfasına git
     await page.goto(`https://ehunt.ai/product-detail/${productId}`, {
@@ -46,64 +46,95 @@ export async function scrapeProduct(productId) {
     });
     console.log('✅ Ürün sayfası yüklendi');
 
-    // 6. Price element'inin yüklenmesini bekle
-    await page.waitForSelector('.src-css-product-listingDetailPrice-2yMy', { 
-      timeout: 15000 
-    });
-    console.log('✅ Price element bulundu');
+    // 6. "Price:" text'ini bekle (daha güvenilir)
+    try {
+      await page.waitForFunction(() => {
+        return document.body.innerText.includes('Price:');
+      }, { timeout: 15000 });
+      console.log('✅ Price bilgisi yüklendi');
+    } catch {
+      console.log('⚠️ Price bilgisi bulunamadı, devam ediyorum...');
+    }
 
     // Ekstra bekleme (JavaScript render için)
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
-    // 7. Verileri çek
+    // 7. Verileri çek (daha esnek selector'lar)
     const data = await page.evaluate(() => {
-      // Price
-      const priceDiv = document.querySelector('.src-css-product-listingDetailPrice-2yMy');
+      // data-v attribute'u ile div bul
+      const priceDiv = document.querySelector('[data-v-0dd74c48][class*="listingDetailPrice"]');
       
-      // Tüm span'ları al
-      const spans = priceDiv?.querySelectorAll('span') || [];
       let currentPrice = null;
       let originalPrice = null;
       let discount = null;
+      let sales = null;
+      let favorites = null;
+      let reviews = null;
+      let stocks = null;
       
-      // Span'ları tara
-      for (let span of spans) {
-        const text = span.innerText.trim();
-        const style = span.getAttribute('style') || '';
+      if (priceDiv) {
+        // Tüm span'ları tara
+        const spans = priceDiv.querySelectorAll('span');
         
-        // Büyük font = current price
-        if (style.includes('font-size: 34px')) {
-          currentPrice = text;
-        }
-        // Line-through = original price
-        else if (style.includes('line-through')) {
-          originalPrice = text;
-        }
-        // "off" içeren = discount
-        else if (text.includes('off')) {
-          discount = text;
+        for (let span of spans) {
+          const text = span.innerText.trim();
+          const style = span.getAttribute('style') || '';
+          
+          // Büyük font = current price
+          if (style.includes('font-size: 34px') || style.includes('font-size:34px')) {
+            currentPrice = text.replace(/\s+/g, ' ').trim();
+          }
+          // Line-through = original price
+          else if (style.includes('line-through')) {
+            originalPrice = text.trim();
+          }
+          // "off" içeren = discount
+          else if (text.includes('off')) {
+            discount = text.trim();
+          }
+          // Stats içeren span
+          else if (text.includes('Sales') || text.includes('Favorites')) {
+            const salesMatch = text.match(/(\d+)\s*Sales/);
+            const favoritesMatch = text.match(/(\d+)\s*Favorites/);
+            const reviewsMatch = text.match(/(\d+)\s*Reviews/);
+            const stocksMatch = text.match(/([\d,]+)\s*Stocks/);
+            
+            if (salesMatch) sales = parseInt(salesMatch[1]);
+            if (favoritesMatch) favorites = parseInt(favoritesMatch[1]);
+            if (reviewsMatch) reviews = parseInt(reviewsMatch[1]);
+            if (stocksMatch) stocks = parseInt(stocksMatch[1].replace(/,/g, ''));
+          }
         }
       }
-      
-      // Stats
-      const statsSpan = priceDiv?.querySelector('span[style*="position: absolute"]');
-      const statsText = statsSpan?.innerText || '';
-      
-      const salesMatch = statsText.match(/(\d+)\s*Sales/);
-      const favoritesMatch = statsText.match(/(\d+)\s*Favorites/);
-      const reviewsMatch = statsText.match(/(\d+)\s*Reviews/);
-      const stocksMatch = statsText.match(/([\d,]+)\s*Stocks/);
 
-      // Tags
-      const tagsDiv = document.querySelector('.src-css-product-listingDetailTags-1CRx');
-      const tags = Array.from(tagsDiv?.querySelectorAll('.src-css-product-listingDetailTagsDiv-bnGT div[style*="cursor"]') || [])
-        .map(tag => tag.innerText.trim())
-        .filter(tag => tag.length > 0);
+      // Tags - data-v attribute ile bul
+      const tagsDiv = document.querySelector('[data-v-0dd74c48][class*="listingDetailTags"]');
+      const tags = [];
+      
+      if (tagsDiv) {
+        const tagDivs = tagsDiv.querySelectorAll('[class*="listingDetailTagsDiv"] div[style*="cursor"]');
+        for (let tag of tagDivs) {
+          const text = tag.innerText.trim();
+          if (text.length > 0) {
+            tags.push(text);
+          }
+        }
+      }
 
       // Title
       const title = document.querySelector('h1')?.innerText || 
                     document.querySelector('meta[property="og:title"]')?.getAttribute('content') ||
                     document.title;
+
+      // Debug info
+      const debugInfo = {
+        hasPriceDiv: !!priceDiv,
+        hasTagsDiv: !!tagsDiv,
+        bodyTextIncludes: {
+          price: document.body.innerText.includes('Price:'),
+          tags: document.body.innerText.includes('Tags')
+        }
+      };
 
       return {
         productId: window.location.pathname.split('/').pop(),
@@ -111,13 +142,14 @@ export async function scrapeProduct(productId) {
         currentPrice: currentPrice,
         originalPrice: originalPrice,
         discount: discount,
-        sales: salesMatch ? parseInt(salesMatch[1]) : null,
-        favorites: favoritesMatch ? parseInt(favoritesMatch[1]) : null,
-        reviews: reviewsMatch ? parseInt(reviewsMatch[1]) : null,
-        stocks: stocksMatch ? parseInt(stocksMatch[1].replace(/,/g, '')) : null,
+        sales: sales,
+        favorites: favorites,
+        reviews: reviews,
+        stocks: stocks,
         tags: tags,
         url: window.location.href,
-        scrapedAt: new Date().toISOString()
+        scrapedAt: new Date().toISOString(),
+        debug: debugInfo
       };
     });
 
@@ -129,13 +161,21 @@ export async function scrapeProduct(productId) {
     console.error('Mevcut URL:', page.url());
     
     try {
+      // Screenshot
       await page.screenshot({ path: '/tmp/error-screenshot.png', fullPage: true });
       console.log('📸 Screenshot kaydedildi');
       
-      // Debug: HTML'i de logla
+      // HTML içeriğini logla (ilk 5000 karakter)
       const html = await page.content();
-      console.log('📄 HTML uzunluğu:', html.length);
-    } catch {}
+      console.log('📄 HTML (ilk 5000 karakter):', html.substring(0, 5000));
+      
+      // Body text
+      const bodyText = await page.evaluate(() => document.body.innerText);
+      console.log('📝 Body text (ilk 2000 karakter):', bodyText.substring(0, 2000));
+      
+    } catch (debugError) {
+      console.error('Debug bilgisi alınamadı:', debugError.message);
+    }
 
     throw new Error(`Scraping failed: ${error.message}`);
     
