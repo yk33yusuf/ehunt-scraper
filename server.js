@@ -21,6 +21,7 @@ app.get('/', (req, res) => {
   });
 });
 
+
 app.post('/scrape', async (req, res) => {
   try {
     const { url, auth } = req.body;
@@ -69,13 +70,31 @@ app.post('/scrape', async (req, res) => {
 
     console.log('[2/4] Injecting tokens...');
     
-    // Token'ları ekle
+    // Token'ları ve subscription'ı ekle
     await page.evaluate((auth) => {
       localStorage.setItem('token', auth.token);
       localStorage.setItem('user_id', auth.user_id);
       localStorage.setItem('plan', auth.plan);
       localStorage.setItem('ver', auth.ver);
       localStorage.setItem('local_username', auth.email);
+      localStorage.setItem('lan', 'en');
+      localStorage.setItem('local_userimg', '');
+      localStorage.setItem('vip_url', 'undefined');
+      
+      // Subscription bilgisini ekle
+      localStorage.setItem('subscription', JSON.stringify({
+        "plan_id": 252,
+        "code": "etsy_plan_0_month_0",
+        "channel": 3,
+        "period_start": "",
+        "period_end": "",
+        "price": 0,
+        "plan_type": "Free",
+        "default_plan": "etsy_plan_0_month_0",
+        "is_admin": 0,
+        "old_code": 0,
+        "refund_tips": ""
+      }));
     }, authData);
 
     // Cookie'ler
@@ -104,7 +123,14 @@ app.post('/scrape', async (req, res) => {
       hasStats: document.body.innerText.includes('Sales'),
       hasLoginWall: document.body.innerText.includes('Login to view'),
       bodyLength: document.body.innerHTML.length,
-      bodyPreview: document.body.innerText.substring(0, 500)
+      bodyPreview: document.body.innerText.substring(0, 500),
+      // LocalStorage kontrolü ekle
+      localStorage: {
+        hasToken: !!localStorage.getItem('token'),
+        hasSubscription: !!localStorage.getItem('subscription'),
+        plan: localStorage.getItem('plan'),
+        userId: localStorage.getItem('user_id')
+      }
     }));
 
     console.log('Page check:', JSON.stringify(pageCheck, null, 2));
