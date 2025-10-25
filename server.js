@@ -154,6 +154,7 @@ app.post('/scrape', async (req, res) => {
       page_check: pageCheck
     };
     
+    
     result.debug.screenshot_base64 = screenshot;
 
     res.json({
