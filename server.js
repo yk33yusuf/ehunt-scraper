@@ -48,117 +48,91 @@ app.post('/scrape', async (req, res) => {
     console.log('==================');
 
     const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+      headless: false, // ← Görünür mod (test için)
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox', 
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled'
+      ]
     });
 
     const page = await browser.newPage();
     
+    // Anti-detection
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+    });
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // ===== TOKEN'I YAKALA =====
-    let capturedToken = null;
+    // ===== DİREKT ÜRÜN SAYFASINA GİT =====
+    console.log('[1/3] Going directly to product page...');
     
-    await page.setRequestInterception(true);
-    page.on('request', request => {
-      const headers = request.headers();
-      if (headers['token']) {
-        capturedToken = headers['token'];
-        console.log('✅ Token yakalandı:', capturedToken.substring(0, 50) + '...');
-      }
-      request.continue();
-    });
-
-    // ===== ANA SAYFAYA GİT (token almak için) =====
-    console.log('[1/5] Loading main page to get fresh token...');
-    
-    await page.goto('https://ehunt.ai', {
-      waitUntil: 'networkidle2',
-      timeout: 30000
-    });
-
-    console.log('[2/5] Injecting auth data...');
-    
-    await page.evaluate((auth) => {
-      localStorage.setItem('token', auth.token);
-      localStorage.setItem('user_id', auth.user_id);
-      localStorage.setItem('plan', auth.plan);
-      localStorage.setItem('ver', auth.ver);
-      localStorage.setItem('local_username', auth.email);
-      localStorage.setItem('lan', 'en');
-      localStorage.setItem('local_userimg', '');
-      localStorage.setItem('vip_url', 'undefined');
-      
-      localStorage.setItem('subscription', JSON.stringify({
-        "plan_id": 252,
-        "code": "etsy_plan_0_month_0",
-        "channel": 3,
-        "period_start": "",
-        "period_end": "",
-        "price": 0,
-        "plan_type": "Free",
-        "default_plan": "etsy_plan_0_month_0",
-        "is_admin": 0,
-        "old_code": 0,
-        "refund_tips": ""
-      }));
-    }, authData);
-
-    await page.setCookie(
-      {name: 'sbox-l', value: 'en', domain: '.ehunt.ai', path: '/'},
-      {name: 'plan', value: authData.plan, domain: '.ehunt.ai', path: '/'},
-      {name: 'local_username', value: authData.email, domain: '.ehunt.ai', path: '/'}
-    );
-
-    console.log('[3/5] Navigating to product page...');
-    
-    const targetUrl = `https://ehunt.ai/iframe/product-detail/${productId}`;
+    const targetUrl = `https://ehunt.ai/product-detail/${productId}`;
     
     await page.goto(targetUrl, {
-      waitUntil: 'networkidle2',
-      timeout: 45000
+      waitUntil: 'networkidle0',
+      timeout: 60000
     });
 
-    console.log('[4/5] Waiting for content...');
-    console.log('Captured token available:', !!capturedToken);
+    console.log('[2/3] Waiting for page to fully load...');
     
-    await page.waitForTimeout(5000);
+    // Daha uzun bekle
+    await page.waitForTimeout(15000);
 
-    // Content check
-    const pageCheck = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      hasProductInfo: !!document.querySelector('[class*="listingDetail"]'),
-      hasTags: !!document.querySelector('[class*="listingDetailTags"]'),
-      hasStats: document.body.innerText.includes('Sales'),
-      hasLoginWall: document.body.innerText.includes('Login to view'),
-      bodyLength: document.body.innerHTML.length,
-      bodyPreview: document.body.innerText.substring(0, 500)
-    }));
+    // Scroll yap (lazy loading için)
+    await page.evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight / 2);
+    });
 
-    console.log('[5/5] Parsing content...');
-    console.log('Page check:', JSON.stringify(pageCheck, null, 2));
+    await page.waitForTimeout(3000);
+
+    console.log('[3/3] Extracting data...');
+
+    // Sayfadaki tüm text'i al
+    const pageContent = await page.evaluate(() => {
+      return {
+        title: document.title,
+        bodyText: document.body.innerText,
+        // Belirli elementleri ara
+        sales: document.body.innerText.match(/(\d+)\s*Sales/i)?.[1] || '0',
+        favorites: document.body.innerText.match(/(\d+)\s*Favorites/i)?.[1] || '0',
+        reviews: document.body.innerText.match(/(\d+)\s*Reviews/i)?.[1] || '0',
+        shopName: document.querySelector('[class*="shop"]')?.innerText || 'Unknown',
+        price: document.querySelector('[class*="price"]')?.innerText || 'Unknown',
+        // Login wall kontrolü
+        hasLoginWall: document.body.innerText.includes('Login') || 
+                      document.body.innerText.includes('Sign in') ||
+                      document.body.innerText.includes('登录'),
+        // Tüm görünür text
+        allText: document.body.innerText.substring(0, 2000)
+      };
+    });
+
+    console.log('Page content:', JSON.stringify(pageContent, null, 2));
 
     const html = await page.content();
-    console.log('HTML length:', html.length);
-
     const screenshot = await page.screenshot({ 
       encoding: 'base64',
-      fullPage: false 
+      fullPage: true 
     });
+
+    // 10 saniye bekle (manuel kontrol için)
+    console.log('⏳ Waiting 10 seconds for manual check...');
+    await page.waitForTimeout(10000);
 
     await browser.close();
 
-    const result = parseHTML(html, `https://ehunt.ai/product-detail/${productId}`);
-    
-    result.auth_status = {
-      has_token: !!authData.token,
-      captured_token: capturedToken ? capturedToken.substring(0, 50) + '...' : null,
-      email: authData.email,
-      page_check: pageCheck
+    const result = {
+      productId,
+      url: targetUrl,
+      pageContent,
+      html_length: html.length,
+      screenshot_base64: screenshot
     };
-    
-    result.debug.screenshot_base64 = screenshot;
 
     res.json({
       success: true,
