@@ -21,6 +21,7 @@ app.get('/', (req, res) => {
   });
 });
 
+const chromium = require('chrome-aws-lambda');
 
 app.post('/scrape', async (req, res) => {
   try {
@@ -41,102 +42,57 @@ app.post('/scrape', async (req, res) => {
       return res.status(400).json({error: 'Invalid URL or product ID'});
     }
 
-    const authData = auth || DEFAULT_AUTH;
-
     console.log('==================');
     console.log('Product ID:', productId);
     console.log('==================');
 
+    // Railway/Production için Chrome binary ayarı
     const browser = await puppeteer.launch({
-      headless: false, // ← Görünür mod (test için)
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled'
-      ]
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath || '/usr/bin/chromium-browser',
+      headless: chromium.headless || true,
     });
 
     const page = await browser.newPage();
     
-    // Anti-detection
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', {
-        get: () => false,
-      });
-    });
-    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // ===== DİREKT ÜRÜN SAYFASINA GİT =====
-    console.log('[1/3] Going directly to product page...');
+    console.log('[1/3] Loading product page...');
     
     const targetUrl = `https://ehunt.ai/product-detail/${productId}`;
     
     await page.goto(targetUrl, {
-      waitUntil: 'networkidle0',
+      waitUntil: 'networkidle2',
       timeout: 60000
     });
 
-    console.log('[2/3] Waiting for page to fully load...');
-    
-    // Daha uzun bekle
-    await page.waitForTimeout(15000);
-
-    // Scroll yap (lazy loading için)
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight / 2);
-    });
-
-    await page.waitForTimeout(3000);
+    console.log('[2/3] Waiting for content...');
+    await page.waitForTimeout(10000);
 
     console.log('[3/3] Extracting data...');
 
-    // Sayfadaki tüm text'i al
     const pageContent = await page.evaluate(() => {
       return {
         title: document.title,
-        bodyText: document.body.innerText,
-        // Belirli elementleri ara
-        sales: document.body.innerText.match(/(\d+)\s*Sales/i)?.[1] || '0',
-        favorites: document.body.innerText.match(/(\d+)\s*Favorites/i)?.[1] || '0',
-        reviews: document.body.innerText.match(/(\d+)\s*Reviews/i)?.[1] || '0',
-        shopName: document.querySelector('[class*="shop"]')?.innerText || 'Unknown',
-        price: document.querySelector('[class*="price"]')?.innerText || 'Unknown',
-        // Login wall kontrolü
-        hasLoginWall: document.body.innerText.includes('Login') || 
-                      document.body.innerText.includes('Sign in') ||
-                      document.body.innerText.includes('登录'),
-        // Tüm görünür text
-        allText: document.body.innerText.substring(0, 2000)
+        bodyText: document.body.innerText.substring(0, 1000),
+        hasData: document.body.innerHTML.length > 1000
       };
     });
 
-    console.log('Page content:', JSON.stringify(pageContent, null, 2));
-
     const html = await page.content();
-    const screenshot = await page.screenshot({ 
-      encoding: 'base64',
-      fullPage: true 
-    });
-
-    // 10 saniye bekle (manuel kontrol için)
-    console.log('⏳ Waiting 10 seconds for manual check...');
-    await page.waitForTimeout(10000);
+    const screenshot = await page.screenshot({ encoding: 'base64' });
 
     await browser.close();
 
-    const result = {
-      productId,
-      url: targetUrl,
-      pageContent,
-      html_length: html.length,
-      screenshot_base64: screenshot
-    };
-
     res.json({
       success: true,
-      data: result
+      data: {
+        productId,
+        pageContent,
+        html_length: html.length,
+        screenshot_base64: screenshot
+      }
     });
 
   } catch (error) {
@@ -147,7 +103,6 @@ app.post('/scrape', async (req, res) => {
     });
   }
 });
-
 
 function parseHTML(html, sourceUrl) {
   function cleanText(text) {
