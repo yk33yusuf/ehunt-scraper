@@ -30,7 +30,6 @@ app.post('/scrape', async (req, res) => {
       return res.status(400).json({error: 'URL required'});
     }
 
-    // URL'den product ID'yi çıkar
     let productId = url.trim();
     
     if (/^\d+$/.test(productId)) {
@@ -46,7 +45,6 @@ app.post('/scrape', async (req, res) => {
 
     console.log('==================');
     console.log('Product ID:', productId);
-    console.log('Token present:', !!authData.token);
     console.log('==================');
 
     const browser = await puppeteer.launch({
@@ -58,19 +56,29 @@ app.post('/scrape', async (req, res) => {
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // ===== DİREKT İFRAME URL'İNE GİT =====
-    const targetUrl = `https://ehunt.ai/iframe/product-detail/${productId}`;
+    // ===== TOKEN'I YAKALA =====
+    let capturedToken = null;
     
-    console.log('[1/4] Loading iframe URL:', targetUrl);
+    await page.setRequestInterception(true);
+    page.on('request', request => {
+      const headers = request.headers();
+      if (headers['token']) {
+        capturedToken = headers['token'];
+        console.log('✅ Token yakalandı:', capturedToken.substring(0, 50) + '...');
+      }
+      request.continue();
+    });
+
+    // ===== ANA SAYFAYA GİT (token almak için) =====
+    console.log('[1/5] Loading main page to get fresh token...');
     
-    await page.goto(targetUrl, {
-      waitUntil: 'domcontentloaded',
+    await page.goto('https://ehunt.ai', {
+      waitUntil: 'networkidle2',
       timeout: 30000
     });
 
-    console.log('[2/4] Injecting tokens...');
+    console.log('[2/5] Injecting auth data...');
     
-    // Token'ları ve subscription'ı ekle
     await page.evaluate((auth) => {
       localStorage.setItem('token', auth.token);
       localStorage.setItem('user_id', auth.user_id);
@@ -81,7 +89,6 @@ app.post('/scrape', async (req, res) => {
       localStorage.setItem('local_userimg', '');
       localStorage.setItem('vip_url', 'undefined');
       
-      // Subscription bilgisini ekle
       localStorage.setItem('subscription', JSON.stringify({
         "plan_id": 252,
         "code": "etsy_plan_0_month_0",
@@ -97,22 +104,25 @@ app.post('/scrape', async (req, res) => {
       }));
     }, authData);
 
-    // Cookie'ler
     await page.setCookie(
       {name: 'sbox-l', value: 'en', domain: '.ehunt.ai', path: '/'},
       {name: 'plan', value: authData.plan, domain: '.ehunt.ai', path: '/'},
       {name: 'local_username', value: authData.email, domain: '.ehunt.ai', path: '/'}
     );
 
-    console.log('[3/4] Reloading with auth...');
+    console.log('[3/5] Navigating to product page...');
     
-    // Sayfayı yenile
-    await page.reload({ waitUntil: 'networkidle2', timeout: 45000 });
+    const targetUrl = `https://ehunt.ai/iframe/product-detail/${productId}`;
+    
+    await page.goto(targetUrl, {
+      waitUntil: 'networkidle2',
+      timeout: 45000
+    });
 
-    console.log('[4/4] Waiting for content...');
+    console.log('[4/5] Waiting for content...');
+    console.log('Captured token available:', !!capturedToken);
     
-    // JavaScript yüklensin
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(5000);
 
     // Content check
     const pageCheck = await page.evaluate(() => ({
@@ -123,16 +133,10 @@ app.post('/scrape', async (req, res) => {
       hasStats: document.body.innerText.includes('Sales'),
       hasLoginWall: document.body.innerText.includes('Login to view'),
       bodyLength: document.body.innerHTML.length,
-      bodyPreview: document.body.innerText.substring(0, 500),
-      // LocalStorage kontrolü ekle
-      localStorage: {
-        hasToken: !!localStorage.getItem('token'),
-        hasSubscription: !!localStorage.getItem('subscription'),
-        plan: localStorage.getItem('plan'),
-        userId: localStorage.getItem('user_id')
-      }
+      bodyPreview: document.body.innerText.substring(0, 500)
     }));
 
+    console.log('[5/5] Parsing content...');
     console.log('Page check:', JSON.stringify(pageCheck, null, 2));
 
     const html = await page.content();
@@ -145,15 +149,14 @@ app.post('/scrape', async (req, res) => {
 
     await browser.close();
 
-    // Parse
     const result = parseHTML(html, `https://ehunt.ai/product-detail/${productId}`);
     
     result.auth_status = {
       has_token: !!authData.token,
+      captured_token: capturedToken ? capturedToken.substring(0, 50) + '...' : null,
       email: authData.email,
       page_check: pageCheck
     };
-    
     
     result.debug.screenshot_base64 = screenshot;
 
