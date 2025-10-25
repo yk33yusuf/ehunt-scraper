@@ -29,159 +29,154 @@ app.post('/scrape', async (req, res) => {
       return res.status(400).json({error: 'URL required'});
     }
 
-    // ===== URL PARSE - DAHA İYİ =====
+    // URL parse
     let productUrl = url.trim();
-    
-    // Sadece ID verilmişse
     if (/^\d+$/.test(productUrl)) {
       productUrl = `https://ehunt.ai/product-detail/${productUrl}`;
     }
-    // iframe URL'si ise düzelt
-    else if (productUrl.includes('/iframe/product-detail/')) {
-      productUrl = productUrl.replace('/iframe/product-detail/', '/product-detail/');
-    }
-    // Kısa URL ise tamamla
-    else if (!productUrl.startsWith('http')) {
-      const idMatch = productUrl.match(/(\d{10,})/);
-      if (idMatch) {
-        productUrl = `https://ehunt.ai/product-detail/${idMatch[1]}`;
-      }
-    }
 
-    // Token'ları belirle
     const authData = auth || DEFAULT_AUTH;
 
     console.log('==================');
-    console.log('Original URL:', url);
-    console.log('Parsed URL:', productUrl);
-    console.log('Token present:', !!authData.token);
-    console.log('Token length:', authData.token ? authData.token.length : 0);
+    console.log('URL:', productUrl);
+    console.log('Token:', authData.token ? `${authData.token.substring(0, 30)}...` : 'NONE');
+    console.log('User ID:', authData.user_id);
     console.log('==================');
 
     const browser = await puppeteer.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 
     const page = await browser.newPage();
     
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-    // 1. Ana sayfaya git
-    console.log('[1/6] Loading base page...');
-    await page.goto('https://ehunt.ai', {
+    // ===== YENİ YAKLAŞIM: DİREKT ÜRÜN SAYFASINA GİT =====
+    console.log('[1/5] Going directly to product page...');
+    
+    // Önce cookie'leri set et (navigate etmeden)
+    await page.setCookie(
+      {name: 'sbox-l', value: 'en', domain: '.ehunt.ai', path: '/'},
+      {name: 'plan', value: 'Free', domain: '.ehunt.ai', path: '/'},
+      {name: 'local_username', value: authData.email, domain: '.ehunt.ai', path: '/'},
+      {name: 'i18n_redirected', value: 'en', domain: '.ehunt.ai', path: '/'}
+    );
+
+    // Sayfaya git
+    await page.goto(productUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    await page.waitForTimeout(2000);
-
-    // 2. localStorage'a token ekle
-    if (authData.token) {
-      console.log('[2/6] Injecting localStorage...');
-      
-      await page.evaluate((auth) => {
-        localStorage.setItem('token', auth.token);
-        localStorage.setItem('user_id', auth.user_id);
-        localStorage.setItem('plan', auth.plan || 'free');
-        localStorage.setItem('ver', auth.ver || 'smb');
-        
-        if (auth.email) {
-          localStorage.setItem('local_username', auth.email);
-        }
-      }, authData);
-
-      // Verify
-      const stored = await page.evaluate(() => ({
-        hasToken: !!localStorage.getItem('token'),
-        userId: localStorage.getItem('user_id')
-      }));
-      console.log('localStorage verified:', stored);
-    }
-
-    // 3. Cookie'leri ekle
-    console.log('[3/6] Setting cookies...');
-    await page.setCookie(
-      {name: 'sbox-l', value: 'en', domain: '.ehunt.ai', path: '/'},
-      {name: 'plan', value: authData.plan || 'free', domain: '.ehunt.ai', path: '/'},
-      {name: 'i18n_redirected', value: 'en', domain: '.ehunt.ai', path: '/'},
-      {name: 'is_first_visit', value: 'false', domain: '.ehunt.ai', path: '/'}
-    );
-
-    if (authData.email) {
-      await page.setCookie({
-        name: 'local_username',
-        value: authData.email,
-        domain: '.ehunt.ai',
-        path: '/'
-      });
-    }
-
-    // 4. Ürün sayfasına git - DİKKATLİ!
-    console.log('[4/6] Navigating to product page:', productUrl);
+    console.log('[2/5] Injecting token into main page...');
     
-    const response = await page.goto(productUrl, {
-      waitUntil: 'networkidle2',
-      timeout: 45000
+    // Ana sayfada localStorage'a ekle
+    await page.evaluate((auth) => {
+      localStorage.setItem('token', auth.token);
+      localStorage.setItem('user_id', auth.user_id);
+      localStorage.setItem('plan', auth.plan);
+      localStorage.setItem('ver', auth.ver);
+      localStorage.setItem('local_username', auth.email);
+    }, authData);
+
+    console.log('[3/5] Checking for iframe...');
+    
+    // İframe var mı kontrol et
+    const iframeExists = await page.evaluate(() => {
+      const iframe = document.querySelector('iframe');
+      return iframe ? iframe.src : null;
     });
 
-    // URL doğru mu kontrol et
-    const currentUrl = page.url();
-    console.log('Current URL after navigation:', currentUrl);
+    console.log('Iframe found:', iframeExists);
 
-    if (!currentUrl.includes('product-detail')) {
-      console.error('⚠️ Navigation failed - not on product page!');
-      console.error('Expected URL to contain: product-detail');
-      console.error('Actual URL:', currentUrl);
+    // Eğer iframe varsa, içine token inject et
+    if (iframeExists) {
+      console.log('[4/5] Injecting token into iframe...');
+      
+      await page.evaluate((auth) => {
+        const iframe = document.querySelector('iframe');
+        if (iframe && iframe.contentWindow) {
+          try {
+            iframe.contentWindow.localStorage.setItem('token', auth.token);
+            iframe.contentWindow.localStorage.setItem('user_id', auth.user_id);
+            iframe.contentWindow.localStorage.setItem('plan', auth.plan);
+            iframe.contentWindow.localStorage.setItem('ver', auth.ver);
+            console.log('✅ Token injected into iframe');
+          } catch (e) {
+            console.log('⚠️ Cannot access iframe localStorage:', e.message);
+          }
+        }
+      }, authData);
     }
 
-    // 5. JavaScript yüklensin
-    console.log('[5/6] Waiting for JavaScript...');
+    // Sayfayı yenile (token'larla)
+    console.log('[5/5] Reloading page with tokens...');
+    await page.reload({ waitUntil: 'networkidle2', timeout: 45000 });
+
+    // Ekstra bekle
     await page.waitForTimeout(8000);
 
-    // 6. Page state kontrol
-    console.log('[6/6] Checking page state...');
-    const pageCheck = await page.evaluate(() => ({
-      url: window.location.href,
-      title: document.title,
-      hasLoginButton: !!document.querySelector('a[href*="login"]'),
-      hasUserProfile: !!document.querySelector('.nav-user-info'),
-      hasProductInfo: !!document.querySelector('[class*="listingDetail"]'),
-      hasTags: !!document.querySelector('[class*="listingDetailTags"]'),
-      bodyPreview: document.body.innerText.substring(0, 200)
-    }));
+    // Page state
+    const pageCheck = await page.evaluate(() => {
+      // İframe içindeki elementi kontrol et
+      let iframeHasProduct = false;
+      const iframe = document.querySelector('iframe');
+      
+      if (iframe && iframe.contentDocument) {
+        iframeHasProduct = !!iframe.contentDocument.querySelector('[class*="listingDetail"]');
+      }
+
+      return {
+        url: window.location.href,
+        title: document.title,
+        hasLoginButton: !!document.querySelector('a[href*="login"]'),
+        hasUserProfile: !!document.querySelector('.nav-user-info'),
+        hasProductInfo: !!document.querySelector('[class*="listingDetail"]'),
+        hasTags: !!document.querySelector('[class*="listingDetailTags"]'),
+        hasIframe: !!iframe,
+        iframeHasProduct: iframeHasProduct,
+        localStorageToken: !!localStorage.getItem('token'),
+        bodyPreview: document.body.innerText.substring(0, 300)
+      };
+    });
 
     console.log('Page check:', JSON.stringify(pageCheck, null, 2));
 
-    // HTML al
     const html = await page.content();
 
-    // Screenshot
-    const screenshot = await page.screenshot({ 
-      encoding: 'base64',
-      fullPage: false 
-    });
+    // Eğer iframe varsa, iframe içeriğini de al
+    let iframeHtml = '';
+    try {
+      iframeHtml = await page.evaluate(() => {
+        const iframe = document.querySelector('iframe');
+        return iframe && iframe.contentDocument ? iframe.contentDocument.body.innerHTML : '';
+      });
+      
+      if (iframeHtml) {
+        console.log('✅ Iframe HTML extracted, length:', iframeHtml.length);
+      }
+    } catch (e) {
+      console.log('⚠️ Could not extract iframe HTML:', e.message);
+    }
+
+    const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
 
     await browser.close();
 
-    // Parse
-    const result = parseHTML(html, productUrl);
+    // Parse - iframe HTML varsa onu kullan
+    const htmlToParse = iframeHtml || html;
+    const result = parseHTML(htmlToParse, productUrl);
     
     result.auth_status = {
       has_token: !!authData.token,
-      token_length: authData.token ? authData.token.length : 0,
-      login_wall_detected: html.includes('Login to view'),
-      email: authData.email || 'anonymous',
+      email: authData.email,
       page_check: pageCheck,
-      navigation_success: currentUrl.includes('product-detail')
+      used_iframe_content: !!iframeHtml
     };
     
     result.debug.screenshot_base64 = screenshot;
+    result.debug.html_source = iframeHtml ? 'iframe' : 'main';
 
     res.json({
       success: true,
@@ -192,7 +187,8 @@ app.post('/scrape', async (req, res) => {
     console.error('❌ Error:', error.message);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: error.message,
+      stack: error.stack
     });
   }
 });
