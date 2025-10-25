@@ -29,14 +29,22 @@ app.post('/scrape', async (req, res) => {
       return res.status(400).json({error: 'URL required'});
     }
 
-    // Parse URL
-    let productUrl = url;
-    if (url.match(/^\d+$/)) {
-      productUrl = `https://ehunt.ai/product-detail/${url}`;
-    } else if (!url.startsWith('http')) {
-      const match = url.match(/(\d+)/);
-      if (match) {
-        productUrl = `https://ehunt.ai/product-detail/${match[1]}`;
+    // ===== URL PARSE - DAHA İYİ =====
+    let productUrl = url.trim();
+    
+    // Sadece ID verilmişse
+    if (/^\d+$/.test(productUrl)) {
+      productUrl = `https://ehunt.ai/product-detail/${productUrl}`;
+    }
+    // iframe URL'si ise düzelt
+    else if (productUrl.includes('/iframe/product-detail/')) {
+      productUrl = productUrl.replace('/iframe/product-detail/', '/product-detail/');
+    }
+    // Kısa URL ise tamamla
+    else if (!productUrl.startsWith('http')) {
+      const idMatch = productUrl.match(/(\d{10,})/);
+      if (idMatch) {
+        productUrl = `https://ehunt.ai/product-detail/${idMatch[1]}`;
       }
     }
 
@@ -44,10 +52,10 @@ app.post('/scrape', async (req, res) => {
     const authData = auth || DEFAULT_AUTH;
 
     console.log('==================');
-    console.log('Scraping:', productUrl);
+    console.log('Original URL:', url);
+    console.log('Parsed URL:', productUrl);
     console.log('Token present:', !!authData.token);
     console.log('Token length:', authData.token ? authData.token.length : 0);
-    console.log('User:', authData.email);
     console.log('==================');
 
     const browser = await puppeteer.launch({
@@ -65,52 +73,39 @@ app.post('/scrape', async (req, res) => {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
     // 1. Ana sayfaya git
-    console.log('Step 1: Loading base page...');
+    console.log('[1/6] Loading base page...');
     await page.goto('https://ehunt.ai', {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    // Sayfa yüklendi mi kontrol
     await page.waitForTimeout(2000);
 
-    // 2. localStorage'a BÜTÜN verileri ekle
+    // 2. localStorage'a token ekle
     if (authData.token) {
-      console.log('Step 2: Injecting localStorage...');
+      console.log('[2/6] Injecting localStorage...');
       
       await page.evaluate((auth) => {
-        // Token'ları ekle
         localStorage.setItem('token', auth.token);
         localStorage.setItem('user_id', auth.user_id);
         localStorage.setItem('plan', auth.plan || 'free');
         localStorage.setItem('ver', auth.ver || 'smb');
         
-        // Ekstra veriler
         if (auth.email) {
           localStorage.setItem('local_username', auth.email);
         }
-        if (auth.subscription) {
-          localStorage.setItem('subscription', auth.subscription);
-        }
-        if (auth.vip_url) {
-          localStorage.setItem('vip_url', auth.vip_url);
-        }
       }, authData);
 
-      // localStorage doğrula
-      const localStorageCheck = await page.evaluate(() => {
-        return {
-          token: localStorage.getItem('token')?.substring(0, 30),
-          user_id: localStorage.getItem('user_id'),
-          plan: localStorage.getItem('plan')
-        };
-      });
-      
-      console.log('localStorage verified:', localStorageCheck);
+      // Verify
+      const stored = await page.evaluate(() => ({
+        hasToken: !!localStorage.getItem('token'),
+        userId: localStorage.getItem('user_id')
+      }));
+      console.log('localStorage verified:', stored);
     }
 
     // 3. Cookie'leri ekle
-    console.log('Step 3: Setting cookies...');
+    console.log('[3/6] Setting cookies...');
     await page.setCookie(
       {name: 'sbox-l', value: 'en', domain: '.ehunt.ai', path: '/'},
       {name: 'plan', value: authData.plan || 'free', domain: '.ehunt.ai', path: '/'},
@@ -127,33 +122,46 @@ app.post('/scrape', async (req, res) => {
       });
     }
 
-    // 4. Ürün sayfasına git
-    console.log('Step 4: Loading product page...');
-    await page.goto(productUrl, {
-      waitUntil: 'networkidle2', // networkidle0 yerine networkidle2
+    // 4. Ürün sayfasına git - DİKKATLİ!
+    console.log('[4/6] Navigating to product page:', productUrl);
+    
+    const response = await page.goto(productUrl, {
+      waitUntil: 'networkidle2',
       timeout: 45000
     });
 
-    // 5. DAHA UZUN BEKLE (JavaScript için)
-    console.log('Step 5: Waiting for JavaScript...');
-    await page.waitForTimeout(8000); // 5 saniye yerine 8 saniye
+    // URL doğru mu kontrol et
+    const currentUrl = page.url();
+    console.log('Current URL after navigation:', currentUrl);
 
-    // 6. Sayfada "Login" var mı kontrol et
-    const pageContent = await page.evaluate(() => {
-      return {
-        hasLoginButton: !!document.querySelector('a[href*="login"]'),
-        hasUserProfile: !!document.querySelector('.nav-user-info'),
-        pageTitle: document.title,
-        bodyText: document.body.innerText.substring(0, 500)
-      };
-    });
+    if (!currentUrl.includes('product-detail')) {
+      console.error('⚠️ Navigation failed - not on product page!');
+      console.error('Expected URL to contain: product-detail');
+      console.error('Actual URL:', currentUrl);
+    }
 
-    console.log('Page check:', pageContent);
+    // 5. JavaScript yüklensin
+    console.log('[5/6] Waiting for JavaScript...');
+    await page.waitForTimeout(8000);
 
-    // 7. HTML'i al
+    // 6. Page state kontrol
+    console.log('[6/6] Checking page state...');
+    const pageCheck = await page.evaluate(() => ({
+      url: window.location.href,
+      title: document.title,
+      hasLoginButton: !!document.querySelector('a[href*="login"]'),
+      hasUserProfile: !!document.querySelector('.nav-user-info'),
+      hasProductInfo: !!document.querySelector('[class*="listingDetail"]'),
+      hasTags: !!document.querySelector('[class*="listingDetailTags"]'),
+      bodyPreview: document.body.innerText.substring(0, 200)
+    }));
+
+    console.log('Page check:', JSON.stringify(pageCheck, null, 2));
+
+    // HTML al
     const html = await page.content();
 
-    // 8. Screenshot al (debug için)
+    // Screenshot
     const screenshot = await page.screenshot({ 
       encoding: 'base64',
       fullPage: false 
@@ -163,15 +171,16 @@ app.post('/scrape', async (req, res) => {
 
     // Parse
     const result = parseHTML(html, productUrl);
+    
     result.auth_status = {
       has_token: !!authData.token,
       token_length: authData.token ? authData.token.length : 0,
-      login_wall_detected: html.includes('Login to view') || html.includes('login to view'),
+      login_wall_detected: html.includes('Login to view'),
       email: authData.email || 'anonymous',
-      page_check: pageContent
+      page_check: pageCheck,
+      navigation_success: currentUrl.includes('product-detail')
     };
     
-    // Debug için screenshot
     result.debug.screenshot_base64 = screenshot;
 
     res.json({
@@ -180,11 +189,10 @@ app.post('/scrape', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error:', error.message);
+    console.error('❌ Error:', error.message);
     res.status(500).json({
       success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 });
